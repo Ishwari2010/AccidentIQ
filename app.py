@@ -40,6 +40,14 @@ def load_artifacts():
 
 model, scaler, label_encoders, model_loaded = load_artifacts()
 
+@st.cache_resource
+def get_shap_explainer(_model):
+    import shap
+    # Using TreeExplainer
+    return shap.TreeExplainer(_model)
+
+
+
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(_html("""
@@ -269,6 +277,92 @@ elif "Predict" in page:
                         margin=dict(l=10, r=10, t=10, b=10)
                     )
                     st.plotly_chart(fig2, use_container_width=True)
+
+                # ── SHAP Explanation (inline) ──────────────────────────────────────────
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown("<div class='chart-title'>🧠 Why This Prediction?</div>", unsafe_allow_html=True)
+
+                try:
+                    from predictor import get_preprocessed_df
+                    import shap, matplotlib, matplotlib.pyplot as plt
+                    matplotlib.use('Agg')  # non-interactive backend, thread-safe
+
+                    df_shap = get_preprocessed_df(inputs, scaler, label_encoders, DEFAULT_FEATURE_ORDER)
+                    explainer = get_shap_explainer(model)
+                    shap_values = explainer.shap_values(df_shap)
+
+                    # Handle list (per-class) vs 3D array output
+                    if isinstance(shap_values, list):
+                        sv = shap_values[pred_class][0]
+                        base_val = explainer.expected_value[pred_class]
+                    elif len(shap_values.shape) == 3:
+                        sv = shap_values[0, :, pred_class]
+                        base_val = explainer.expected_value[pred_class]
+                    else:
+                        sv = shap_values[0]
+                        base_val = explainer.expected_value
+
+                    # Build readable feature name dict
+                    feat_labels = [f.replace('_', ' ').title() for f in DEFAULT_FEATURE_ORDER]
+                    shap_pairs = list(zip(feat_labels, sv))
+                    shap_sorted = sorted(shap_pairs, key=lambda x: x[1])
+
+                    top_risk = [(k, v) for k, v in reversed(shap_sorted) if v > 0][:4]
+                    top_safe = [(k, v) for k, v in shap_sorted if v < 0][:4]
+
+                    # Human-readable summary
+                    summary_parts = []
+                    if top_risk:
+                        summary_parts.append(f"**{top_risk[0][0]}** was the strongest factor pushing toward {sev}.")
+                    if top_safe:
+                        summary_parts.append(f"**{top_safe[0][0]}** helped reduce the severity risk.")
+                    summary_text = ' '.join(summary_parts) if summary_parts else "All features contributed roughly equally to this prediction."
+
+                    st.markdown(f"<p style='color:#94a3b8; font-size:0.95rem; line-height:1.7; padding:1rem; background:#0a0f1e; border-radius:10px; border:1px solid #1e293b'>{summary_text}</p>", unsafe_allow_html=True)
+
+                    rc1, rc2 = st.columns(2)
+                    with rc1:
+                        st.markdown("<div class='chart-title'>🔴 Top Risk Factors</div>", unsafe_allow_html=True)
+                        if top_risk:
+                            for k, v in top_risk:
+                                bar_pct = min(int(abs(v) * 400), 100)
+                                st.markdown(f"<div style='background:#0a0f1e; border:1px solid #1e293b; border-left:4px solid #ef4444; padding:0.7rem 1rem; margin-bottom:0.5rem; border-radius:8px;'><span style='color:#f1f5f9; font-weight:600'>{k}</span><br><div style='background:#1f0000; border-radius:4px; height:6px; margin-top:6px;'><div style='background:#ef4444; width:{bar_pct}%; height:6px; border-radius:4px;'></div></div><span style='color:#ef4444; font-size:0.8rem; font-family:monospace'>+{v:.4f}</span></div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown("<p style='color:#64748b'>No significant risk factors detected.</p>", unsafe_allow_html=True)
+                    with rc2:
+                        st.markdown("<div class='chart-title'>🔵 Mitigating Factors</div>", unsafe_allow_html=True)
+                        if top_safe:
+                            for k, v in top_safe:
+                                bar_pct = min(int(abs(v) * 400), 100)
+                                st.markdown(f"<div style='background:#0a0f1e; border:1px solid #1e293b; border-left:4px solid #3b82f6; padding:0.7rem 1rem; margin-bottom:0.5rem; border-radius:8px;'><span style='color:#f1f5f9; font-weight:600'>{k}</span><br><div style='background:#0c1a3a; border-radius:4px; height:6px; margin-top:6px;'><div style='background:#3b82f6; width:{bar_pct}%; height:6px; border-radius:4px;'></div></div><span style='color:#3b82f6; font-size:0.8rem; font-family:monospace'>{v:.4f}</span></div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown("<p style='color:#64748b'>No strong mitigating factors found.</p>", unsafe_allow_html=True)
+
+                    # SHAP Bar Chart via Plotly (no matplotlib threading issues)
+                    all_feats = [k for k, v in shap_sorted]
+                    all_vals  = [v for k, v in shap_sorted]
+                    bar_colors = ["#ef4444" if v > 0 else "#3b82f6" for v in all_vals]
+
+                    shap_fig = go.Figure(go.Bar(
+                        x=all_vals,
+                        y=all_feats,
+                        orientation='h',
+                        marker_color=bar_colors,
+                        text=[f"{v:+.4f}" for v in all_vals],
+                        textposition='outside',
+                    ))
+                    shap_fig.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font_color='#cbd5e1', height=500,
+                        title=dict(text=f"SHAP Values — {sev} Class", font=dict(color='#f1f5f9', size=13)),
+                        margin=dict(l=10, r=60, t=40, b=10),
+                        xaxis=dict(showgrid=True, gridcolor='#1e293b', zeroline=True, zerolinecolor='#334155'),
+                        yaxis=dict(showgrid=False),
+                    )
+                    st.plotly_chart(shap_fig, use_container_width=True)
+
+                except Exception as shap_err:
+                    st.warning(f"⚠️ Could not generate SHAP explanation: {shap_err}")
 
             except Exception as e:
                 st.error(f"Prediction error: {e}")

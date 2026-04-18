@@ -3,18 +3,10 @@ import pandas as pd
 import numpy as np
 
 
-def run_prediction(inputs: dict, model, scaler, label_encoders: dict, feature_order: list):
+def get_preprocessed_df(inputs: dict, scaler, label_encoders: dict, feature_order: list):
     """
-    Encode inputs using saved label encoders, apply scaler if present,
-    then return (predicted_class, probability_array).
-
-    Parameters
-    ----------
-    inputs        : dict of raw user selections from the form
-    model         : loaded sklearn/xgboost model
-    scaler        : loaded StandardScaler (or None)
-    label_encoders: dict  {column_name: fitted LabelEncoder}
-    feature_order : list of column names in training order
+    Format inputs into a DataFrame, apply label encoders and scaler.
+    Returns the processed DataFrame.
     """
     # Build single-row DataFrame in training column order
     row = {}
@@ -52,6 +44,12 @@ def run_prediction(inputs: dict, model, scaler, label_encoders: dict, feature_or
         except Exception:
             pass  # if scaler fails (column mismatch), proceed unscaled
 
+    return df
+
+
+def run_prediction(inputs: dict, model, scaler, label_encoders: dict, feature_order: list):
+    df = get_preprocessed_df(inputs, scaler, label_encoders, feature_order)
+    
     # ── Predict ───────────────────────────────────────────────────────────────
     pred_class = int(model.predict(df)[0])
 
